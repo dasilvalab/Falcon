@@ -1,0 +1,43 @@
+Package: Falcon
+Title: Flexible ANCOVA Leveraging Covariate Optimization and Normalization 
+Version: 0.3.0
+Authors@R: 
+    c(person(given = "Daniel", family = "da Silva", email = "daniel.dasilva@mssm.edu", role = c("aut", "cre"), comment = c(ORCID = "0000-0003-0033-3270")),
+    person(given = "Kory", family = "Johnson", email = "johnsonko@mail.nih.gov", role = c("aut", "ctb"), comment = c(ORCID = "ORCID-ID")))
+Description: This package performs differential expression analysis using linear models and ANCOVA, with automatic covariate selection.
+Imports:
+    dplyr,
+    ggplot2,
+    stats,
+    car,
+    edgeR,
+    effects,
+    grid,
+    gridExtra,
+    limma,
+    multcomp,
+    multtest,
+    progress,
+    reshape2,
+    stringr,
+    RColorBrewer,
+    methods,
+    tidyr,
+    MASS,
+    cowplot,
+    forcats,
+    ggrepel,
+    magrittr,
+    patchwork,
+    pheatmap
+LazyData: true
+License: GPL-3
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.2
+Suggests: 
+    knitr,
+    rmarkdown
+VignetteBuilder: knitr
+Depends: 
+    R (>= 2.10)

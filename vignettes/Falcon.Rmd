@@ -1,0 +1,809 @@
+---
+title: "Falcon Usage Guide"
+author: "Daniel da Silva"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true         
+    toc_depth: 3      
+    toc_float: false   
+    css: ../css/style.css
+vignette: >
+  %\VignetteIndexEntry{Falcon Usage Guide}
+  %\VignetteEncoding{UTF-8}
+  %\VignetteEngine{knitr::rmarkdown}
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+# **Introduction**
+
+The Falcon package is designed to facilitate transcriptomic data
+analysis using differential expression analysis (DEA) with covariate
+selection. Falcon relies on analysis of covariance and therefore is
+specially useful to perform multiple groups comparsion (\>2), but also
+works just fine with a regular 2-group analysis.
+
+Genes are not uniformly influenced by covariates, as the effects can
+vary significantly depending on the specific gene and the context. For
+instance, certain genes may be more responsive to factors such as
+gender, while others might be influenced by age or batch effects in
+experimental data. Traditional statistical models typically apply a
+fixed set of covariates across all genes, which can lead to
+oversimplifications and fail to capture the unique biological
+variability associated with each gene.
+
+To address this limitation, the Falcon approach enhances the performance
+of differential expression analysis (DEA) by implementing a stepwise
+Akaike Information Criterion (AIC) method. This technique allows for the
+selection of the most appropriate covariates for each individual gene,
+ensuring that the model remains parsimonious and tailored to the
+specific biological context. By dynamically fitting a unique combination
+of covariates for each gene, Falcon not only improves the accuracy of
+the model but also enhances the interpretability of the results,
+allowing for a more nuanced understanding of the underlying biological
+processes. This method represents a significant advancement in the
+field, enabling researchers to derive more reliable insights from their
+gene expression data.
+
+This vignette provides a comprehensive guide on how to use Falcon
+effectively, covering data input, normalization, gene filtering DEA, and
+interpreting results.
+
+# Loading the package
+```{r setup}
+library(Falcon)
+```
+
+# Input Data Structure
+
+## FalconNest
+
+The 'FalconNest' object is an S4 class designed to store all data
+necessary for the analysis pipeline. The Falcon pipeline is built such
+that each step progressively adds information to this central object. By
+the end of the analysis, the 'FalconNest' object will contain all
+relevant data and results. Additionally, this object provides access to
+all downstream analyses offered by Falcon, as detailed later in this
+vignette.
+
+The Falcon package provides a sample dataset, 'AlcoholBrain', intended
+for educational purposes. This dataset was initially published by Kapoor
+et al. (2021) and later reanalyzed using Falcon by MacDonald et al.
+(2024). It contains RNA-seq data from postmortem dorsolateral prefrontal
+cortex samples, comparing patients diagnosed with Alcohol Use Disorder
+to matched control subjects. To streamline analyses and ensure faster
+processing times, the original dataset has been randomly downsampled to
+8,000 genes. Despite the reduction, the dataset retains key biological
+insights and is ideal for demonstrating the features of the 'Falcon'
+package in differential expression analysis.
+
+The `Falcon.colData` dataset includes technical covariates (e.g., RIN -
+RNA integrity number - and PMI - Post-mortem interval) and biological
+covariates (e.g., Age and Gender). In this vignette, we will use the
+following covariates: `Classification`,`Gender`,`Ethnic.origin`,`Age`,
+`PMI`, `RIN`,`BMI`,`Total.drinking.yrs`,`COD.category`,`Alcohol.Lifetime.use`.
+
+Below is an example of preparing a `FalconNest` object using the
+`AlcoholBrain` dataset:
+
+```{r load-data, include=TRUE}
+data("AlcoholBrain")  # Load the AlcoholBrain dataset
+
+#Inspect both objects:
+
+Falcon.counts<-AlcoholBrain$Falcon.counts
+head(Falcon.counts[, 1:5], 5)
+
+Falcon.colData<-AlcoholBrain$Falcon.colData
+head(Falcon.colData[, 1:5], 6)
+
+#Check the available technical and biological information associated with the AlcoholBrain dataset.
+names(Falcon.colData)
+```
+
+The `FalconNest` object requires the following parameters:
+
+`count`: A matrix or data frame with genes as rows and samples as
+columns, containing integer values and will handle normalization steps
+internally. A normalized count data is not acceppeted as input.
+`colData`: A data frame with samples as rows and phenotypic information
+as columns. `design`: a formula specifying the model for downstream
+analysis. Covariates in the formula can be any column included in
+colData. `Falcon` can process both numeric and categorical variables, so
+no pre-transformation is needed. `design`: the list of covariates to be
+evaluated. `Falcon` only handles additive models. Covariates should be
+input in a formula format, starting with a tilde '(\~)' followed with
+each term separated by a plus sign. The order of the covariates is not
+relevant.
+
+```{r, include = TRUE}
+nest<-FalconNest(counts = Falcon.counts,
+                 colData = Falcon.colData, 
+                 design = ~Classification+Gender+Ethnic.origin+Age+PMI+RIN+BMI+Total.drinking.yrs+COD.category+Alcohol.Lifetime.use)
+```
+
+To inspect the `FalconNest` object, simply type it in the console.
+Falcon will display basic information about your dataset.
+
+```{r, include = TRUE}
+nest
+```
+
+### Exploring Global Effects with `FalconScout`
+
+Once the **`FalconNest`** object is created, it is recommended to explore the global effects of each covariate in your dataset. The **Falcon** package includes an exploratory analysis wrapper function called **`FalconScout()`**, specifically designed for this purpose.
+
+**Function Overview:**
+- **Input:** The function accepts a **`FalconNest`** object.
+For continuous covariates, **`FalconScout()`** generates histograms that are split by the specified group parameter, allowing you to visualize the distribution of each variable within different groups.
+For categorical covariates, the function performs Principal Component Analysis (PCA) and colors the results by the corresponding levels of each covariate, providing insights into how these categorical variables relate to the overall variation in the dataset.
+
+```{r, include = TRUE, fig.width=15, fig.height=10}
+FalconScout(nest, group="Classification")
+```
+
+By inspecting the plot above, it appears that COD.category and Age do not differ significantly between the two groups and may not be particularly informative in this context. The Falcon Nest object can be updated by using the acessory fuction dropCovariate:
+
+```{r, include = TRUE}
+nest<-dropCovariate(nest, covariate=c("Age","COD.category"))
+nest
+```
+
+# Data Normalization
+
+The **Falcon** package employs a comprehensive approach to prepare data
+for differential expression analysis. This process includes four main
+steps: 1) Normalization, 2) Noise correction, 3) Flooring and 4) Quality
+control. Here's a detailed breakdown:
+
+::: text-box
+**Note about warning messages:**
+
+In each Falcon function, several important data transformations are
+conducted internally to streamline the analysis process, allowing users
+to focus on their results rather than manual data handling. To maintain
+transparency, Falcon prints warning messages in the console for each
+significant transformation that is executed. Although these warnings may
+appear numerous, they are crucial for ensuring transparency in data
+preparation and helping users understand the steps taken during the
+analysis.
+
+While it is generally recommended to keep these warnings enabled for
+clarity, users have the option to silence them by setting
+`verbose=FALSE`. However, doing so may obscure important information
+about the data transformation processes occurring within the functions.
+
+At the end of each section of this vignette, we will present a summary
+of the potential warning messages that may arise during the execution of
+the Falcon functions, along with their meanings. This will help users
+understand the significance of each warning and provide guidance on how
+to interpret them in the context of their analyses.
+:::
+
+### 1) Normalization
+
+The normalization process in **Falcon** involves several key steps to
+ensure that the count data is accurately prepared for downstream
+analysis.
+
+**Counts Per Million (CPM) Calculation:** Counts Per Million (CPM) for
+each gene are calculated using the `cpm` function from the `limma`
+package. This step normalizes the raw counts by the total number of
+reads per sample, adjusting for differences in library sizes.
+
+**Pseudo Log2 Normalization:** To stabilize variance and improve the
+distribution of the data, a pseudo log2 transformation is applied. This
+transformation helps in managing low-count values and brings the data
+closer to a normal distribution.
+
+**Normalization Between Samples:** Normalization between samples is
+performed using the CyclicLoess method from the `limma` package. This
+method corrects for systematic biases across samples, ensuring that the
+data is comparable.
+
+### 2) Noise correction
+
+**Noise correction** involves adjusting the data to account for
+technical variability and systematic errors that are not related to
+biological differences such as technical variability and systematic
+biases.
+
+### 3) Flooring
+
+**Flooring** handles very low counts by applying a threshold below which
+all values are adjusted to a specific floor This step is important for
+reducing bias in statistical analysis by helping stabilizing variance
+and reducing the influence of low-count values on differential
+expression testing.
+
+All of these steps are conveniently encapsulated within a single function called `FalconPreen()`, which accepts several parameters that will be explained in detail next. Please note that `FalconPreen` requires a `FalconNest` object as its input.
+
+**Group:** The `group` parameter refers to the group of interest for the
+statistical comparison. It must be a categorical variable with at least
+two levels, although it can have more. This variable is defined earlier
+in the Falcon pipeline and plays a crucial role in the data
+normalization process, which will be discussed in the following
+sections.
+
+**Mean.pick** The `mean.pick` parameter determines the threshold level
+for the flooring step in data normalization. It accepts two types of
+values: NULL or a positive numeric value.
+
+`NULL` (default): When `mean.pick` is set to `NULL`, Falcon
+automatically determines the threshold based on the distribution of
+counts and variance. Specifically, the `FalconPreen` function calculates
+the relationship between the coefficient of variation (CV) and the mean
+count for each group level. It then applies a locally weighted
+scatterplot smoothing (LOWESS) curve to identify trends in the data. The
+threshold is determined where the LOWESS curve reveals a linear
+relationship between the CV and the mean count.
+
+However, due to data variability and other factors, this automatic
+threshold might not always yield the most optimal results. In such
+cases, it is recommended to manually define the `mean.pick` value to
+fine-tune the analysis according to your specific dataset. This can be
+especially useful if you are working with complex datasets where the
+default behavior doesn't capture key features.
+
+If a specific threshold is preferred, the mean.pick parameter can be
+manually set to a positive numeric value. This value should fall between
+zero and the average mean count in your dataset. To ensure the chosen
+threshold is appropriate, users are encouraged to evaluate the mean.pick
+setting by plotting the CV vs. mean graph using the
+'plotNoiseCorrection()' function, as explained below. This plot helps
+visualize the relationship between the coefficient of variation and the
+mean, allowing for a more informed selection of the threshold that best
+suits the data.
+
+**lowess.f** The `lowess.f` parameter controls the smoothness of the
+LOWESS curve, determining the fraction of data points used to fit each
+local polynomial. Values between 0 and 1 are possible. Small values make
+the curve more sensitive to local variations and fit the data more
+closely, capturing more detail and fluctuations. Large values result in
+a smoother curve that is less affected by local variations. For count
+data, a value between 1/16 and 1/64 is typically recommended for an
+effective balance between detail and smoothness. The default value for
+'lowess.f' is 1/16.
+
+**flooring.ratio** The `flooring.ratio` parameter defines the filtering
+conditions applied to the threshold set by `mean.pick.` It determines
+the percentage of samples in each group level that must exceed the
+`mean.pick` threshold for a gene to be retained. This parameter can
+range from greater than 0 to less than or equal to 1, with
+flooring.ratio = 1 being the most stringent, retaining only genes where
+all samples in all group factors meet the `mean.pick` threshold.
+Conversely, a value closer to 0 is more lenient, allowing genes with
+only a small number of samples having counts above the mean.pick
+threshold to pass through the filter. The optimal value should be chosen
+based on the specific characteristics of the dataset. Additional
+insights can be obtained by visualizing the noise-corrected data using
+the plotNoiseCorrection() function, as described in the following
+section. By default, the flooring.ratio is set to 60%.
+
+The `flooring.option` parameter in FalconPreen() controls how the
+threshold defined by `mean.pick` is applied to gene expression data.
+This parameter can take two values: "soft" or "hard."
+
+When `mean.pick` is applied, the function imposes a minimum expression
+level for each gene that passes the threshold, creating a "floored"
+expression level equal to `mean.pick`. However, this can lead to P-value
+inflation in downstream differential expression analysis. To address
+this, `FalconPreen()` includes a smoothing option for floored values.
+
+1.  **`flooring.option = "soft"` (default):** In this mode, genes with
+    expression levels equal to `mean.pick` undergo a smoothing process.
+    Specifically, **Falcon** replaces these floored expression values
+    with values drawn from a normal distribution, where the mean is
+    `mean.pick` and the standard deviation is twice the standard
+    deviation of `mean.pick`. This introduces a small amount of random
+    noise (jitter) to the floored genes, helping to preserve the overall
+    expression distribution and mitigate P-value inflation. Falcon will
+    print a message in the console showing how many genes have been
+    softened. You can also retrieve the list of softened genes from the
+    'FalconNest' object for further inspection or analysis.
+
+2.  **`flooring.option = "hard"`:** In contrast, when set to "hard",
+    Falcon applies the threshold bluntly, without any smoothing. All
+    floored genes will retain the exact `mean.pick` value as their
+    minimum expression level, without introducing any jitter. This
+    method may be simpler but carries a higher risk of inflating
+    P-values in differential expression analyses.
+
+Choosing between "soft" and "hard" should depend on the user's goals and
+the data. The soft option generally provides a more conservative
+approach to minimize potential bias while preserving biological
+variability.
+
+The **`cv.pick`** parameter defines a noise threshold for the dataset
+based on the coefficient of variation (CV) of each gene's expression
+levels. This parameter accepts two types of values: `NULL` or a positive
+numeric value.
+
+1.  **`NULL` (default):**\
+    When `cv.pick` is set to `NULL`, the threshold is automatically
+    calculated using the LOWESS curve. In this mode, `FalconPreen()`
+    computes the standard deviation for values equal to `mean.pick` and
+    establishes `cv.pick` as the coefficient of variation corresponding
+    to two standard deviations of `mean.pick`. However, due to
+    variability in data distribution and other influencing factors, this
+    automatically calculated threshold may not always be optimal. In
+    such cases, it may be beneficial to define a user-specific
+    `cv.pick`. Generally, values between 30 and 40 are often considered
+    acceptable for most datasets.
+
+2.  **User-defined `cv.pick`:**\
+    If a specific noise threshold is desired, users can manually set
+    `cv.pick` to a positive numeric value. This allows for greater
+    control over the analysis, enabling users to tailor the threshold
+    according to the characteristics of their specific dataset.
+
+```{r, include = TRUE}
+normedFalcon<-FalconPreen(nest, group ="Classification", mean.pick = NULL, cv.pick = NULL, flooring.option = "soft", flooring.ratio = 0.3, lowess.f = 1/16)
+```
+
+If a covariate contains missing values (NA), `Falcon` will automatically
+exclude the associated samples from the analysis and print a warning
+message indicating which samples were excluded. Users should carefully
+evaluate whether to retain such covariates, as there is a trade-off
+between excluding samples and retaining all samples with the covariate.
+This issue will be discussed in more detail in the "Results" section of
+this vignette. In this example, `Falcon` removed samples SRR8843020 and 
+SRR8843064 from the analysis due to NA values in the BMI covariate.
+
+<div class="text-box">
+**Possible Warning messages**
+
+#### NA removal
+
+- **Warning:** Rows removed due to NA values. The count matrix and colData have been updated accordingly.
+
+When searching for NA values in the colData, it’s important to note that **Falcon** will only check the columns of colData specified in the **FalconNest** object. Therefore, if there are covariates with NA values in colData that are not part of the model, those NA values are irrelevant and do not need to be filtered out prior to analysis.
+
+#### Handling categorical varaibles
+
+- **Warning:** The following categorical variables have been converted to factors. 
+
+Categorical data need to be transformed into factors for proper analysis. **Falcon** will automatically handle the transformation of these variables if they haven't been converted yet. 
+
+- For factors with more than two levels, **Falcon** will create dummy variables to fit into the linear model. These dummy variables will replace the original variables in the downstream analysis. They will be named in the format `rootname_VariableLevel`. 
+
+For example, the variable **Ethnic.origin** has four levels: "European," "Asian," "Pacific Islander," and "Middle Eastern," therofore five dummy variables will be created: **Ethnic.origin_European**, **Ethnic.origin_Asian**, **Ethnic.origin_Pacific_Islander** and **Ethnic.origin_Middle_Eastern**. Note that "Pacific Islander" and "Middle Eastern" contains a space, which is not R-friendly; **Falcon** will attempt to work around such cases to transform variables into a format compatible with R. However, it is highly recommended that users clean their data before starting with **Falcon**, as they are more familiar with the specifics of their dataset. 
+
+Additionally, users should analyze each covariate before including it in the model. 
+In this example, **Ethnic.origin** is an unbalanced covariate since "Pacific Islander" and "Middle Eastern" have only one sample each. Users should carefully weigh the advantages of retaining unbalanced variables against the potential impact on model fit.
+
+#### Data scaling
+
+- **Warning:** The following numeric variables have not been scaled. 
+
+Numeric variables with large standard deviations can significantly impact the fit of the model. Falcon will identify any numeric variables exhibiting large standard deviations and suggest scaling. However, please note that Falcon will NOT automatically scale these variables and will proceed with the analysis using the original data. The decision to scale or retain the original variables lies with the user.
+
+#### Softeing floor values
+
+- **Warning:** X% of values have been softened
+When flooring.option = "soft", Falcon will display the percentage of genes that have undergone expression softening.
+</div>
+
+
+### 3) Quality control assessment.
+
+It is highly recommended to assess the results of the normalization
+steps before proceeding to differential expression analysis for two
+important reasons:
+
+#### 3.1 Noise and Flooring Fit
+
+Depending on the characteristics of your dataset, you may need to
+fine-tune the mean.pick and 'cv.pick' parameters. These parameters
+should be carefully adjusted to match the dataset, and the best way to
+ensure an optimal fit is by visually evaluating the results through
+graphical analysis. This evaluation can be done easily using the
+'plotNoiseCorrection()' function. This function takes the 'FalconNest'
+object generated from the previous normalization process as its sole
+parameter. It produces two CV vs mean expression plots: one before
+applying flooring and noise correction, and one after, enabling a clear
+visual comparison.
+
+```{r, include = TRUE, fig.width=10, fig.height=6}
+plotNoiseCorrection(normedFalcon)
+```
+
+Several key steps should be evaluated during the normalization process
+to ensure a good fit:
+
+##### 3.1.1 Group Variance Trend: The variance of all groups should exhibit a similar trend on the LOWESS curve. This consistency is crucial as it confirms that variance patterns across groups are comparable, which is an essential assumption for analysis of covariance.
+
+##### 3.1.2 Positioning of mean.pick: The 'mean.pick' parameter should ideally be placed in the post-peak linear portion of the lowess curve. This ensures that the selection of the mean threshold is occurring where the curve has stabilized, reflecting more reliable and consistent expression data.
+
+##### 3.1.3 Placement of cv.pick: The cv.pick value should be located away from the main cluster of points in the CV plot, indicating that the cutoff is effectively separating noise from true signal.
+
+##### 3.1.4 Softened Floor: When using the softened flooring option, a small amount of jitter should be visible along the 'mean.pick' line, indicating that the floor has been softly applied.
+
+### 3.2 Data Normalization and Outlier Inspection
+
+Even after normalization, datasets can still be influenced by noise or
+outliers, which may affect the downstream analysis. To identify and
+inspect potential outliers, the plotQC() function can be used.
+
+This function requires two parameters:
+
+The normalized FalconNest object: This object should come from the
+earlier normalization steps. The group parameter: Specify which group
+variable should be highlighted in the plot.
+
+The function returns:
+
+2.1 A boxplot showing the normalized and floored expression distribution
+for each sample, allowing you to visually inspect for any anomalies or
+uneven distributions across samples.
+
+2.2 A PCA (Principal Component Analysis) plot, which projects the
+samples into a reduced 2D space, making it easier to identify any
+samples that deviate significantly from the main clusters, suggesting
+potential outliers.
+
+```{r, include = TRUE, fig.width=10, fig.height=6}
+plotQC(normedFalcon, group="Classification")
+```
+
+The flexibility of the group parameter is crucial because samples may
+cluster based on specific variables, such as experimental batches or
+other technical factors. This is particularly important when batch
+effects are present, as they can cause samples to cluster according to
+batch rather than biological factors, which is easily spotted in the PCA
+plot.
+
+In such cases, users should take appropriate corrective actions, such as
+including the batch effect in the model, using surrogate variables,
+regressing out the batch effect.
+
+It's recommended to explore the data with different group variables to
+fully understand how the samples are clustering and to ensure that batch
+effects or other technical factors are not driving the observed
+patterns.
+
+Additionally, the 'plotNoiseCorrection()' function evaluates potential
+outliers using the Mahalanobis distance. A sample is flagged as an
+outlier if it surpasses the 99th percentile of the Chi-squared
+distribution with 2 degrees of freedom. Outliers are flagged and
+visually identified in the PCA plot. In the PCA plot, outlier samples
+will be indicated with a blue arrowhead, accompanied by the label
+"Outlier" in red, followed by the sample name.
+
+At this point, users can choose to proceed with the flagged outliers or
+take action by removing the outliers from the analysis. To remove
+flagged samples, users should rerun the 'FalconPreen()' function,
+passing in the already normalized 'FalconNest' object (e.g.,
+'normedFalcon'). This step will exclude the flagged outlier samples and
+reapply the normalization process, ensuring cleaner data for the
+differential expression analysis. **Important:** 'FalconPreen' will only remove 
+outliers based on the pre-defined 'group' parameter, even though other 
+outliers might have been identified using other variables in 'plotQC()'.
+
+```{r, include = TRUE}
+normedFalcon<-FalconPreen(normedFalcon, group ="Classification", mean.pick = NULL, cv.pick = NULL, flooring.option = "soft", flooring.ratio = 0.3, lowess.f = 1/16)
+```
+
+```{r, include = TRUE, fig.width=10, fig.height=6}
+plotQC(normedFalcon, group="Classification")
+```
+
+# 4) Differential expression analysis
+
+The `Falcon` package utilizes ANCOVA with stepwise Akaike Information
+Criterion (AIC) selection to perform differential expression analysis,
+ensuring the most parsimonious model is selected for each gene. This
+process incorporates various control analyses that occur behind the
+scenes, with three parameters available for user customization.
+
+```{r, include = TRUE}
+FalconDE <- FalconHatch(normedFalcon, contrasts = "all", p.adjust="BH", random.covar = TRUE, shuffle.group = TRUE, FalconOutput= TRUE) 
+```
+
+`Falcon` expects a FalconNest object that have been gone through
+normalization using 'FalconPreen'.
+
+**NOTE:** Falcon's runtime increases due to stepwise optimization, which
+is dependent on the number of covariates. Consequently, datasets with
+many covariates may take longer to analyze. To assist users in tracking
+progress and estimating the remaining time, Falcon provides a progress
+bar that displays the estimated time to completion (ETA).
+
+**Randomization controls** 'Falcon' includes two sets of randomization
+controls to assess the validity and confidence of the differential
+expression analysis results.
+
+**random.covar**: When set to 'TRUE' (the default), Falcon will generate
+a control random covariate drawn from a normal distribution, with a
+length equal to the number of samples in the dataset. This random
+covariate is incorporated into the pool of covariates available for the
+stepwise AIC selection process. Since the variable is random, we do not
+expect it to be included in the final model. If it is selected during
+AIC optimization, it indicates that the specific gene is being
+associated with a random covariate, and thus the model is not suitable
+to explain that gene's expression. 'Falcon' will log all genes
+associated with the random covariate in the 'CovarFlaggedGenes' column
+of the output Results table. It is important to note that this random
+covariate is solely used for model fit assessment and is NOT included in
+the final model, meaning that the adjusted expression data for flagged
+genes remains unaffected by the random covariate.
+
+'Falcon' will print a message in the console indicating the number of
+genes that have been flagged. Users will have the option to either
+retain these genes for downstream analysis or remove them, as will be
+detailed in the next section.
+
+**shuffle.group**
+
+Similarly, setting `shuffle.group = TRUE` will create a new covariate by
+randomly shuffling the 'Group' covariate defined in the 'FalconNest'
+object. This random variable is not anticipated to be associated with
+any genes in the analysis. If any genes are found to be associated with
+this shuffled variable, they will be flagged and recorded in the
+'ShuffledFlaggedGenes' column of the Results table. By default, this
+parameter is set to `FALSE.`
+
+**contrasts**
+
+'Falcon' is specifically designed to perform analyses on groups with
+multiple levels (\>2) using the F-statistic. However, it also works
+effectively for simpler two-group designs.
+
+\*\*Multilevel Design and Group Comparisons
+
+When analyzing multilevel designs (comparing more than two groups),
+'Falcon' uses an F-test to assess group-wise effects. The results of
+this test are displayed in the F column of the Results table, along with
+the associated False Discovery Rate (FDR) in the FDR column. This
+P-value is the primary output of the 'Falcon' analysis, and a P-value \<
+alpha indicates a significant association between gene expression and
+group levels. Since the F-test result does not indicate which specific
+pairs of groups are differentially regulated, Falcon provides different
+post-hoc comparison options through the 'contrasts' parameter:
+
+1.  'contrasts = "all"': This option performs a Tukey test, comparing
+    all possible group combinations. For example, if the group has
+    levels "Control", "Group_A", and "Group_B", the test will output
+    P-values for "Group_A vs Control", "Group_B vs Control", and
+    "Group_A vs Group_B". The Tukey test is robust because it controls
+    for family-wise error rates. However, if you're only interested in
+    specific comparisons (e.g., comparing both experimental groups to
+    the control but not to each other), the Tukey test may be overly
+    stringent.
+
+2.  'contrasts = "reference"': In cases where your hypothesis only calls
+    for comparing experimental groups against a control group, Falcon
+    offers the contrasts = "reference" option, which performs a Dunnett
+    test. This test compares all groups to a designated reference level.
+    **Note:** 'Falcon' does not automatically identify whether the
+    "Control" level is the reference group, so you must set it manually.
+    'Falcon' will issue a warning during the 'FalconNest' step and
+    another one when using the contrasts = "reference" option to remind
+    you of this.
+
+3.  'custom.contrasts': If your hypothesis requires specific group
+    comparisons that don't fit into the above options, Falcon allows you
+    to define custom contrasts. For instance, if you are only interested
+    in the comparisons "Control vs Group_A" and "Group_A vs Group_B",
+    you can specify these directly. The input for custom contrasts
+    should be a vector of strings representing the desired comparisons,
+    separated by a colon (:). For example, use contrasts =
+    c("Control:Group_A", "Group_A:Group_B") to specify those two
+    comparisons.
+
+\*\*Two levels Design and Group Comparisons
+
+When conducting a two-group design, Falcon will switch to a moderated
+T-test, providing the T statistic and the associated FDR. In this
+scenario, Falcon will ignore the post hoc parameter and will not perform
+any post hoc analyses.
+
+**p.adjust**
+
+Applies multiple testing corrections to p-values, including:
+
+1. '"bonferroni"': multiplies p-values by the number of comparisons 
+conservative family-wise error rate (FWER) control).
+2. '"holm"': a step-down method that's less conservative than Bonferroni 
+(FWER control).
+3. '"hochberg"': a step-up method assuming independent tests (FWER control).
+4. '"hommel"': similar to Hochberg but more powerful in some cases (FWER control).
+5. '"BH"': controls the false discovery rate, less conservative than FWER methods.
+6. '"BY"': adjusts "BH" for dependent tests (FDR control).
+
+**FalconOutput** See Section 6, Reproducibility
+
+#### note about colinearity
+
+Akaike Information Criterion (AIC) is primarily used for model
+selection, weighting between goodness of fit and model
+complexity. However, it does not directly address multicollinearity
+within a model.
+
+Multicollinearity can distort the estimates of coefficients and their
+standard errors, ultimately impacting the performance of the model
+assessed by AIC and potentially leading to misleading results.
+
+To evaluate this issue, 'Falcon' incorporates a multicollinearity
+assessment using Variance Inflation Factor (VIF) analysis. 
+'Falcon' evaluates VIF for each gene,
+measuring multicolinearity across each unique combination of covariates.
+Rather than filtering these results, 'Falcon' reports them in the 'VIF'
+column of the Results table. This column can indicate four possible
+levels:
+
+**NA:** Not applicable, shown only when the model consists of a single
+variable (GROUP). **NONE:** No multicollinearity detected (VIF values
+between 0 and 7). **HIGH:** VIF values greater than 8. In cases of high
+VIF, Falcon will specify the names of the problematic covariates. When
+VIF indicates high levels of multicollinearity, it is strongly
+recommended to consider removing or combining the affected variables,
+utilizing techniques such as regularization or dimensionality reduction.
+
+# 5) Results
+
+## 5.1 Results table
+
+The results table from the Falcon analysis can be retrieved using the
+'getResults()' function.
+
+```{r, include = TRUE}
+FalconResults<-getResults(FalconDE, p.adjusted = 0.6, extendedData = FALSE)
+head(FalconResults)
+```
+
+The getResults() function takes two inputs:
+
+**p.adjusted:** This parameter filters the results based on the
+specified threshold. To save the entire table without filtering, set
+p.adjusted = 1.
+
+**extendedData:** A boolean parameter that accepts either TRUE or FALSE.
+Falcon retrieves various pieces of information from the linear modeling
+process. While this extended information might be useful in some cases,
+it may not be necessary for downstream analysis. By setting extendedData
+= FALSE (the default), only essential columns will be included in the
+results table. These columns include:
+
+**Index:** Gene ID (row names of the original count table) **Model:**
+The set of covariates selected by stepwise AIC modeling
+**Levene_P.value:** P-value associated with the Levene test to assess
+homoscedasticity **FDR:** Groupwise adjusted P-value **AdjMean:**
+Adjusted mean expression based on the selected model **Log2FC:**
+Corresponding pairwise log2 fold change
+
+Depending on custom settings, additional information such as VIF,
+CovarFlaggedGenes, and ShuffledFlaggedGenes may also appear in the
+results.
+
+## 5.2 Expression data
+
+Raw counts, normalized expression, or adjusted expression can be
+retrieved using the 'getExpression()' function, which takes two
+parameters:
+
+'FalconNest' object type: "raw", "normalized", or "adjusted".
+
+Raw refers to the count data used in the FalconPreen function. It may
+differ from the original input data if there were NA values present in
+the dataset.
+
+Normalized is the result of the FalconPreen function and can be used to
+assess the overall pattern of gene expression within or between samples.
+
+Adjusted refers to the fitted expression according to its respective
+model. This data is utilized for differential analysis and subsequent
+downstream analyses.
+
+## 5.3 Results plots
+
+Falcon offers a few option to plot the results.
+
+### 5.3.1 plotResults()
+
+```{r, include = TRUE, fig.width=10, fig.height=6}
+plotResults(FalconDE, p.adjusted = 0.6, group = "Classification")
+```
+
+This function will plot:
+
+**PCA**: The adjusted expression of genes, selected based on the
+p.adjusted parameter, is projected into a reduced 2D space, with sample
+points colored according to the factor group. This plot is extremely
+helpful for evaluating how well the differentially expressed genes
+(DEGs) separate the levels of the specified group. The group parameter
+can also be modified to investigate potential indirect associations
+between DEGs and other covariates present in the original FalconNest
+object.
+
+**Heatmap**: A heatmap generated using the pheatmap package displays the
+relative scaled expression of DEGs across samples. The graph includes
+annotations on top, corresponding to each covariate provided in the
+original FalconNest object. This visualization is particularly useful
+for identifying up- and downregulated genes, as well as for observing
+associations between gene expression and the complete set of covariates
+in the model.
+
+### 5.3.2 plotCovariates()
+
+```{r, include = TRUE, fig.width=15, fig.height=10}
+plotCovariates(FalconDE, expanded = FALSE)
+```
+
+This function will plot:
+
+**Covariate coverage** This graph shows the percentage coverage of each
+covariate in the model, illustrating the proportion of genes in your
+dataset that had that covariate included in expression modeling.
+Covariates with high coverage percentages significantly influence
+overall gene expression; for instance, batch effects often exemplify
+this. The GROUP variable will always represent 100% coverage, as it is
+the only fixed covariate in the model and is not subject to AIC
+selection.
+
+Additionally, this graph can help identify covariates that may have
+minimal influence on gene expression. If low-coverage covariates have
+missing information (NA) for certain samples, it may be advantageous to
+exclude those covariates from the original modeling. This approach can
+increase the number of samples included in the analysis without
+adversely affecting the final model.
+
+**Covariate co-occurrence**
+
+An upset plot displays the intersections of co-occurring covariates. It
+shows the occurrence of each model and ranks them from most to least
+frequent, highlighting which sets of covariates have the greatest impact
+on overall gene expression.
+
+# 6 Reproducibility
+
+The **Falcon** package provides a valuable feature to enhance the
+reproducibility of publications using the Falcon pipeline. By default,
+when performing differential expression analysis, 'Falcon' sets the
+'FalconOutput' parameter to 'TRUE.' This feature allows Falcon to
+automatically generate a log file that captures all key information used
+throughout the analysis.
+
+This log file is saved in the working directory with a timestamp in its
+name and a '.Falcon' extension. We strongly recommend that users submit
+this file alongside their count and phenotype data to public
+repositories, ensuring the reproducibility of their results.
+
+To facilitate the reproduction of an experiment, Falcon offers the
+'FalconHatch' function. This function requires only two inputs: the
+count data and the .Falcon log file. Since the colData (phenotype data)
+is already stored within the FalconOutput file, it's not necessary to
+provide it separately. The 'FalconHoming' function will automatically
+re-execute all steps of the Falcon pipeline.
+
+The results will be stored in a 'FalconHoming' object, which can then be
+used to retrieve result tables, access expression data, and generate any
+of the Falcon visualizations.
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE, eval=FALSE}
+Homing<-FalconHoming(count, OutputFalcon=NULL, colData=NULL)
+Homing
+```
+
+**countData** The original count data used in the initial analysis. This
+file must contain raw count data.
+
+**OutputFalcon** If set to 'NULL', 'FalconHatch' will search for a
+'.Falcon' file in the current directory and will automatically upload
+it. If multiple '.Falcon' files are found, the most recent one will be
+used. Users also have the option to specify a different path by setting
+'OutputFalcon = "/path/FalconOutput.Falcon"'.
+
+**colData** If set to 'NULL', Falcon will use the 'colData' information
+stored in the 'OutputFalcon' file. Users can also input their own
+'colData' information. Please note that the 'colData' must contain the
+original information used in the initial analysis.
